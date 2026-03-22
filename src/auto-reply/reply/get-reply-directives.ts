@@ -1,19 +1,19 @@
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
+import { resolveFastModeState } from "../../agents/fast-mode.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
+import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import type { SkillCommandSpec } from "../../agents/skills.js";
-import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { listChatCommands, shouldHandleTextCommands } from "../commands-registry.js";
-import { listSkillCommandsForWorkspace } from "../skill-commands.js";
+import { shouldHandleTextCommands } from "../commands-text-routing.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveBlockStreamingChunking } from "./block-streaming.js";
-import { buildCommandContext } from "./commands.js";
-import { type InlineDirectives, parseInlineDirectives } from "./directive-handling.js";
+import { buildCommandContext } from "./commands-context.js";
+import { type InlineDirectives, parseInlineDirectives } from "./directive-handling.parse.js";
 import { applyInlineDirectiveOverrides } from "./get-reply-directives-apply.js";
-import { clearInlineDirectives } from "./get-reply-directives-utils.js";
+import { clearExecInlineDirectives, clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { defaultGroupActivation, resolveGroupRequireMention } from "./groups.js";
 import { CURRENT_MESSAGE_MARKER, stripMentions, stripStructuralPrefixes } from "./mentions.js";
 import { createModelSelectionState, resolveContextTokens } from "./model-selection.js";
@@ -23,6 +23,24 @@ import type { TypingController } from "./typing.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
+
+let commandsRegistryPromise: Promise<typeof import("../commands-registry.runtime.js")> | null =
+  null;
+let skillCommandsPromise: Promise<typeof import("../skill-commands.runtime.js")> | null = null;
+
+function loadCommandsRegistry() {
+  commandsRegistryPromise ??= import("../commands-registry.runtime.js");
+  return commandsRegistryPromise;
+}
+
+function loadSkillCommands() {
+  skillCommandsPromise ??= import("../skill-commands.runtime.js");
+  return skillCommandsPromise;
+}
+
+function shouldLogDirectiveTiming(): boolean {
+  return process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
+}
 
 export type ReplyDirectiveContinuation = {
   commandSource: string;
@@ -37,6 +55,7 @@ export type ReplyDirectiveContinuation = {
   elevatedFailures: Array<{ gate: string; key: string }>;
   defaultActivation: ReturnType<typeof defaultGroupActivation>;
   resolvedThinkLevel: ThinkLevel | undefined;
+  resolvedFastMode: boolean;
   resolvedVerboseLevel: VerboseLevel | undefined;
   resolvedReasoningLevel: ReasoningLevel;
   resolvedElevatedLevel: ElevatedLevel;
@@ -46,6 +65,7 @@ export type ReplyDirectiveContinuation = {
     minChars: number;
     maxChars: number;
     breakPreference: "paragraph" | "newline" | "sentence";
+    flushOnParagraph?: boolean;
   };
   resolvedBlockStreamingBreak: "text_end" | "message_end";
   provider: string;
@@ -73,7 +93,9 @@ function resolveExecOverrides(params: {
     (params.sessionEntry?.execSecurity as ExecOverrides["security"]);
   const ask = params.directives.execAsk ?? (params.sessionEntry?.execAsk as ExecOverrides["ask"]);
   const node = params.directives.execNode ?? params.sessionEntry?.execNode;
-  if (!host && !security && !ask && !node) return undefined;
+  if (!host && !security && !ask && !node) {
+    return undefined;
+  }
   return { host, security, ask, node };
 }
 
@@ -103,10 +125,22 @@ export async function resolveReplyDirectives(params: {
   aliasIndex: ModelAliasIndex;
   provider: string;
   model: string;
+  hasResolvedHeartbeatModelOverride: boolean;
   typing: TypingController;
   opts?: GetReplyOptions;
   skillFilter?: string[];
 }): Promise<ReplyDirectiveResult> {
+  const directiveTimingEnabled = shouldLogDirectiveTiming();
+  const directiveStartMs = directiveTimingEnabled ? Date.now() : 0;
+  const logDirectiveStage = (stage: string, extra?: string) => {
+    if (!directiveTimingEnabled) {
+      return;
+    }
+    const suffix = extra ? ` ${extra}` : "";
+    console.log(
+      `[directive-resolve] session=${params.sessionKey} stage=${stage} elapsedMs=${Date.now() - directiveStartMs}${suffix}`,
+    );
+  };
   const {
     ctx,
     cfg,
@@ -128,6 +162,7 @@ export async function resolveReplyDirectives(params: {
     defaultModel,
     provider: initialProvider,
     model: initialModel,
+    hasResolvedHeartbeatModelOverride,
     typing,
     opts,
     skillFilter,
@@ -164,27 +199,42 @@ export async function resolveReplyDirectives(params: {
     surface: command.surface,
     commandSource: ctx.CommandSource,
   });
-  const shouldResolveSkillCommands =
-    allowTextCommands && command.commandBodyNormalized.includes("/");
-  const skillCommands = shouldResolveSkillCommands
-    ? listSkillCommandsForWorkspace({
-        workspaceDir,
-        cfg,
-        skillFilter,
-      })
+  const commandTextHasSlash = commandText.includes("/");
+  const reservedCommands = new Set<string>();
+  if (commandTextHasSlash) {
+    const { listChatCommands } = await loadCommandsRegistry();
+    for (const chatCommand of listChatCommands()) {
+      for (const alias of chatCommand.textAliases) {
+        reservedCommands.add(alias.replace(/^\//, "").toLowerCase());
+      }
+    }
+  }
+
+  const rawAliases = commandTextHasSlash
+    ? Object.values(cfg.agents?.defaults?.models ?? {})
+        .map((entry) => entry.alias?.trim())
+        .filter((alias): alias is string => Boolean(alias))
+        .filter((alias) => !reservedCommands.has(alias.toLowerCase()))
     : [];
-  const reservedCommands = new Set(
-    listChatCommands().flatMap((cmd) =>
-      cmd.textAliases.map((a) => a.replace(/^\//, "").toLowerCase()),
-    ),
-  );
+
+  // Only load workspace skill commands when we actually need them to filter aliases.
+  // This avoids scanning skills for messages that only use plain text with no slash syntax.
+  const skillCommands =
+    allowTextCommands && commandTextHasSlash && rawAliases.length > 0
+      ? (await loadSkillCommands()).listSkillCommandsForWorkspace({
+          workspaceDir,
+          cfg,
+          skillFilter,
+        })
+      : [];
+  logDirectiveStage("skill-commands-loaded", `count=${skillCommands.length}`);
   for (const command of skillCommands) {
     reservedCommands.add(command.name.toLowerCase());
   }
-  const configuredAliases = Object.values(cfg.agents?.defaults?.models ?? {})
-    .map((entry) => entry.alias?.trim())
-    .filter((alias): alias is string => Boolean(alias))
-    .filter((alias) => !reservedCommands.has(alias.toLowerCase()));
+
+  const configuredAliases = rawAliases.filter(
+    (alias) => !reservedCommands.has(alias.toLowerCase()),
+  );
   const allowStatusDirective = allowTextCommands && command.isAuthorizedSender;
   let parsedDirectives = parseInlineDirectives(commandText, {
     modelAliases: configuredAliases,
@@ -210,28 +260,13 @@ export async function resolveReplyDirectives(params: {
   }
   if (isGroup && ctx.WasMentioned !== true && parsedDirectives.hasExecDirective) {
     if (parsedDirectives.execSecurity !== "deny") {
-      parsedDirectives = {
-        ...parsedDirectives,
-        hasExecDirective: false,
-        execHost: undefined,
-        execSecurity: undefined,
-        execAsk: undefined,
-        execNode: undefined,
-        rawExecHost: undefined,
-        rawExecSecurity: undefined,
-        rawExecAsk: undefined,
-        rawExecNode: undefined,
-        hasExecOptions: false,
-        invalidExecHost: false,
-        invalidExecSecurity: false,
-        invalidExecAsk: false,
-        invalidExecNode: false,
-      };
+      parsedDirectives = clearExecInlineDirectives(parsedDirectives);
     }
   }
   const hasInlineDirective =
     parsedDirectives.hasThinkDirective ||
     parsedDirectives.hasVerboseDirective ||
+    parsedDirectives.hasFastDirective ||
     parsedDirectives.hasReasoningDirective ||
     parsedDirectives.hasElevatedDirective ||
     parsedDirectives.hasExecDirective ||
@@ -256,12 +291,15 @@ export async function resolveReplyDirectives(params: {
       }
     }
   }
-  let directives = commandAuthorized
+  // Use command.isAuthorizedSender (resolved authorization) instead of raw commandAuthorized
+  // to ensure inline directives work when commands.allowFrom grants access (e.g., LINE).
+  let directives = command.isAuthorizedSender
     ? parsedDirectives
     : {
         ...parsedDirectives,
         hasThinkDirective: false,
         hasVerboseDirective: false,
+        hasFastDirective: false,
         hasReasoningDirective: false,
         hasStatusDirective: false,
         hasModelDirective: false,
@@ -270,7 +308,9 @@ export async function resolveReplyDirectives(params: {
       };
   const existingBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   let cleanedBody = (() => {
-    if (!existingBody) return parsedDirectives.cleaned;
+    if (!existingBody) {
+      return parsedDirectives.cleaned;
+    }
     if (!sessionCtx.CommandBody && !sessionCtx.RawBody) {
       return parseInlineDirectives(existingBody, {
         modelAliases: configuredAliases,
@@ -311,6 +351,7 @@ export async function resolveReplyDirectives(params: {
     ctx,
     provider: messageProviderKey,
   });
+  logDirectiveStage("elevated-permissions");
   const elevatedEnabled = elevated.enabled;
   const elevatedAllowed = elevated.allowed;
   const elevatedFailures = elevated.failures;
@@ -339,20 +380,26 @@ export async function resolveReplyDirectives(params: {
   });
   const defaultActivation = defaultGroupActivation(requireMention);
   const resolvedThinkLevel =
-    (directives.thinkLevel as ThinkLevel | undefined) ??
-    (sessionEntry?.thinkingLevel as ThinkLevel | undefined) ??
-    (agentCfg?.thinkingDefault as ThinkLevel | undefined);
+    directives.thinkLevel ?? (sessionEntry?.thinkingLevel as ThinkLevel | undefined);
+  const resolvedFastMode =
+    directives.fastMode ??
+    resolveFastModeState({
+      cfg,
+      provider,
+      model,
+      sessionEntry,
+    }).enabled;
 
   const resolvedVerboseLevel =
-    (directives.verboseLevel as VerboseLevel | undefined) ??
+    directives.verboseLevel ??
     (sessionEntry?.verboseLevel as VerboseLevel | undefined) ??
     (agentCfg?.verboseDefault as VerboseLevel | undefined);
-  const resolvedReasoningLevel: ReasoningLevel =
-    (directives.reasoningLevel as ReasoningLevel | undefined) ??
+  let resolvedReasoningLevel: ReasoningLevel =
+    directives.reasoningLevel ??
     (sessionEntry?.reasoningLevel as ReasoningLevel | undefined) ??
     "off";
   const resolvedElevatedLevel = elevatedAllowed
-    ? ((directives.elevatedLevel as ElevatedLevel | undefined) ??
+    ? (directives.elevatedLevel ??
       (sessionEntry?.elevatedLevel as ElevatedLevel | undefined) ??
       (agentCfg?.elevatedDefault as ElevatedLevel | undefined) ??
       "on")
@@ -372,9 +419,11 @@ export async function resolveReplyDirectives(params: {
   const blockReplyChunking = blockStreamingEnabled
     ? resolveBlockStreamingChunking(cfg, sessionCtx.Provider, sessionCtx.AccountId)
     : undefined;
+  logDirectiveStage("block-streaming-resolved", `enabled=${blockStreamingEnabled}`);
 
   const modelState = await createModelSelectionState({
     cfg,
+    agentId,
     agentCfg,
     sessionEntry,
     sessionStore,
@@ -386,9 +435,32 @@ export async function resolveReplyDirectives(params: {
     provider,
     model,
     hasModelDirective: directives.hasModelDirective,
+    hasResolvedHeartbeatModelOverride,
   });
+  logDirectiveStage(
+    "model-selection-state",
+    `needsCatalog=${modelState.needsModelCatalog} provider=${modelState.provider} model=${modelState.model}`,
+  );
   provider = modelState.provider;
   model = modelState.model;
+  const resolvedThinkLevelWithDefault =
+    resolvedThinkLevel ??
+    (await modelState.resolveDefaultThinkingLevel()) ??
+    (agentCfg?.thinkingDefault as ThinkLevel | undefined);
+  logDirectiveStage("thinking-default-resolved", `think=${resolvedThinkLevelWithDefault ?? "off"}`);
+
+  // When neither directive nor session set reasoning, default to model capability
+  // (e.g. OpenRouter with reasoning: true). Skip auto-enabling when thinking is
+  // active, including model-inferred defaults, or internal thinking blocks can
+  // be emitted as visible "Reasoning:" messages.
+  const reasoningExplicitlySet =
+    directives.reasoningLevel !== undefined ||
+    (sessionEntry?.reasoningLevel !== undefined && sessionEntry?.reasoningLevel !== null);
+  const thinkingActive = resolvedThinkLevelWithDefault !== "off";
+  if (!reasoningExplicitlySet && resolvedReasoningLevel === "off" && !thinkingActive) {
+    resolvedReasoningLevel = await modelState.resolveDefaultReasoningLevel();
+  }
+  logDirectiveStage("reasoning-default-resolved", `reasoning=${resolvedReasoningLevel}`);
 
   let contextTokens = resolveContextTokens({
     agentCfg,
@@ -438,6 +510,7 @@ export async function resolveReplyDirectives(params: {
     effectiveModelDirective,
     typing,
   });
+  logDirectiveStage("inline-overrides-applied", `kind=${applyResult.kind}`);
   if (applyResult.kind === "reply") {
     return { kind: "reply", reply: applyResult.reply };
   }
@@ -462,7 +535,8 @@ export async function resolveReplyDirectives(params: {
       elevatedAllowed,
       elevatedFailures,
       defaultActivation,
-      resolvedThinkLevel,
+      resolvedThinkLevel: resolvedThinkLevelWithDefault,
+      resolvedFastMode,
       resolvedVerboseLevel,
       resolvedReasoningLevel,
       resolvedElevatedLevel,

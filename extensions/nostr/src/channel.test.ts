@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nostrPlugin } from "./channel.js";
+import { TEST_HEX_PRIVATE_KEY, createConfiguredNostrCfg } from "./test-fixtures.js";
 
 describe("nostrPlugin", () => {
   describe("meta", () => {
@@ -42,13 +43,7 @@ describe("nostrPlugin", () => {
     });
 
     it("listAccountIds returns default for configured", () => {
-      const cfg = {
-        channels: {
-          nostr: {
-            privateKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-          },
-        },
-      };
+      const cfg = createConfiguredNostrCfg();
       const ids = nostrPlugin.config.listAccountIds(cfg);
       expect(ids).toContain("default");
     });
@@ -61,22 +56,27 @@ describe("nostrPlugin", () => {
 
     it("recognizes npub as valid target", () => {
       const looksLikeId = nostrPlugin.messaging?.targetResolver?.looksLikeId;
-      if (!looksLikeId) return;
+      if (!looksLikeId) {
+        return;
+      }
 
       expect(looksLikeId("npub1xyz123")).toBe(true);
     });
 
     it("recognizes hex pubkey as valid target", () => {
       const looksLikeId = nostrPlugin.messaging?.targetResolver?.looksLikeId;
-      if (!looksLikeId) return;
+      if (!looksLikeId) {
+        return;
+      }
 
-      const hexPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-      expect(looksLikeId(hexPubkey)).toBe(true);
+      expect(looksLikeId(TEST_HEX_PRIVATE_KEY)).toBe(true);
     });
 
     it("rejects invalid input", () => {
       const looksLikeId = nostrPlugin.messaging?.targetResolver?.looksLikeId;
-      if (!looksLikeId) return;
+      if (!looksLikeId) {
+        return;
+      }
 
       expect(looksLikeId("not-a-pubkey")).toBe(false);
       expect(looksLikeId("")).toBe(false);
@@ -84,10 +84,11 @@ describe("nostrPlugin", () => {
 
     it("normalizeTarget strips nostr: prefix", () => {
       const normalize = nostrPlugin.messaging?.normalizeTarget;
-      if (!normalize) return;
+      if (!normalize) {
+        return;
+      }
 
-      const hexPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-      expect(normalize(`nostr:${hexPubkey}`)).toBe(hexPubkey);
+      expect(normalize(`nostr:${TEST_HEX_PRIVATE_KEY}`)).toBe(TEST_HEX_PRIVATE_KEY);
     });
   });
 
@@ -108,10 +109,11 @@ describe("nostrPlugin", () => {
 
     it("normalizes nostr: prefix in allow entries", () => {
       const normalize = nostrPlugin.pairing?.normalizeAllowEntry;
-      if (!normalize) return;
+      if (!normalize) {
+        return;
+      }
 
-      const hexPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-      expect(normalize(`nostr:${hexPubkey}`)).toBe(hexPubkey);
+      expect(normalize(`nostr:${TEST_HEX_PRIVATE_KEY}`)).toBe(TEST_HEX_PRIVATE_KEY);
     });
   });
 

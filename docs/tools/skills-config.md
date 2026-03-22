@@ -3,7 +3,9 @@ summary: "Skills config schema and examples"
 read_when:
   - Adding or modifying skills config
   - Adjusting bundled allowlist or install behavior
+title: "Skills Config"
 ---
+
 # Skills Config
 
 All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.json`.
@@ -13,31 +15,37 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
   skills: {
     allowBundled: ["gemini", "peekaboo"],
     load: {
-      extraDirs: [
-        "~/Projects/agent-scripts/skills",
-        "~/Projects/oss/some-skill-pack/skills"
-      ],
+      extraDirs: ["~/Projects/agent-scripts/skills", "~/Projects/oss/some-skill-pack/skills"],
       watch: true,
-      watchDebounceMs: 250
+      watchDebounceMs: 250,
     },
     install: {
       preferBrew: true,
-      nodeManager: "npm" // npm | pnpm | yarn | bun (Gateway runtime still Node; bun not recommended)
+      nodeManager: "npm", // npm | pnpm | yarn | bun (Gateway runtime still Node; bun not recommended)
     },
     entries: {
-      "nano-banana-pro": {
+      "image-lab": {
         enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
+        apiKey: { source: "env", provider: "default", id: "GEMINI_API_KEY" }, // or plaintext string
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE"
-        }
+          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+        },
       },
       peekaboo: { enabled: true },
-      sag: { enabled: false }
-    }
-  }
+      sag: { enabled: false },
+    },
+  },
 }
 ```
+
+For built-in image generation/editing, prefer `agents.defaults.imageGenerationModel`
+plus the core `image_generate` tool. `skills.entries.*` is only for custom or
+third-party skill workflows.
+
+Examples:
+
+- Native Nano Banana-style setup: `agents.defaults.imageGenerationModel.primary: "google/gemini-3-pro-image-preview"`
+- Native fal setup: `agents.defaults.imageGenerationModel.primary: "fal/fal-ai/flux/dev"`
 
 ## Fields
 
@@ -53,9 +61,11 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
 - `entries.<skillKey>`: per-skill overrides.
 
 Per-skill fields:
+
 - `enabled`: set `false` to disable a skill even if it’s bundled/installed.
 - `env`: environment variables injected for the agent run (only if not already set).
 - `apiKey`: optional convenience for skills that declare a primary env var.
+  Supports plaintext string or SecretRef object (`{ source, provider, id }`).
 
 ## Notes
 
@@ -69,6 +79,7 @@ When a session is **sandboxed**, skill processes run inside Docker. The sandbox
 does **not** inherit the host `process.env`.
 
 Use one of:
+
 - `agents.defaults.sandbox.docker.env` (or per-agent `agents.list[].sandbox.docker.env`)
 - bake the env into your custom sandbox image
 

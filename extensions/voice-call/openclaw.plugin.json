@@ -101,7 +101,7 @@
     },
     "tts.provider": {
       "label": "TTS Provider Override",
-      "help": "Deep-merges with messages.tts (Edge is ignored for calls).",
+      "help": "Deep-merges with messages.tts (Microsoft is ignored for calls).",
       "advanced": true
     },
     "tts.openai.model": {
@@ -168,12 +168,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": [
-          "telnyx",
-          "twilio",
-          "plivo",
-          "mock"
-        ]
+        "enum": ["telnyx", "twilio", "plivo", "mock"]
       },
       "telnyx": {
         "type": "object",
@@ -224,12 +219,7 @@
       },
       "inboundPolicy": {
         "type": "string",
-        "enum": [
-          "disabled",
-          "allowlist",
-          "pairing",
-          "open"
-        ]
+        "enum": ["disabled", "allowlist", "pairing", "open"]
       },
       "allowFrom": {
         "type": "array",
@@ -247,10 +237,7 @@
         "properties": {
           "defaultMode": {
             "type": "string",
-            "enum": [
-              "notify",
-              "conversation"
-            ]
+            "enum": ["notify", "conversation"]
           },
           "notifyHangupDelaySec": {
             "type": "integer",
@@ -261,6 +248,10 @@
       "maxDurationSeconds": {
         "type": "integer",
         "minimum": 1
+      },
+      "staleCallReaperSeconds": {
+        "type": "integer",
+        "minimum": 0
       },
       "silenceTimeoutMs": {
         "type": "integer",
@@ -300,11 +291,7 @@
         "properties": {
           "mode": {
             "type": "string",
-            "enum": [
-              "off",
-              "serve",
-              "funnel"
-            ]
+            "enum": ["off", "serve", "funnel"]
           },
           "path": {
             "type": "string"
@@ -317,12 +304,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": [
-              "none",
-              "ngrok",
-              "tailscale-serve",
-              "tailscale-funnel"
-            ]
+            "enum": ["none", "ngrok", "tailscale-serve", "tailscale-funnel"]
           },
           "ngrokAuthToken": {
             "type": "string"
@@ -335,6 +317,27 @@
           }
         }
       },
+      "webhookSecurity": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "allowedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trustForwardingHeaders": {
+            "type": "boolean"
+          },
+          "trustedProxyIPs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "streaming": {
         "type": "object",
         "additionalProperties": false,
@@ -344,9 +347,7 @@
           },
           "sttProvider": {
             "type": "string",
-            "enum": [
-              "openai-realtime"
-            ]
+            "enum": ["openai-realtime"]
           },
           "openaiApiKey": {
             "type": "string"
@@ -365,6 +366,22 @@
           },
           "streamPath": {
             "type": "string"
+          },
+          "preStartTimeoutMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxPendingConnections": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxPendingConnectionsPerIp": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxConnections": {
+            "type": "integer",
+            "minimum": 1
           }
         }
       },
@@ -380,9 +397,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": [
-              "openai"
-            ]
+            "enum": ["openai"]
           },
           "model": {
             "type": "string"
@@ -395,30 +410,17 @@
         "properties": {
           "auto": {
             "type": "string",
-            "enum": [
-              "off",
-              "always",
-              "inbound",
-              "tagged"
-            ]
+            "enum": ["off", "always", "inbound", "tagged"]
           },
           "enabled": {
             "type": "boolean"
           },
           "mode": {
             "type": "string",
-            "enum": [
-              "final",
-              "all"
-            ]
+            "enum": ["final", "all"]
           },
           "provider": {
-            "type": "string",
-            "enum": [
-              "openai",
-              "elevenlabs",
-              "edge"
-            ]
+            "type": "string"
           },
           "summaryModel": {
             "type": "string"
@@ -476,11 +478,7 @@
               },
               "applyTextNormalization": {
                 "type": "string",
-                "enum": [
-                  "auto",
-                  "on",
-                  "off"
-                ]
+                "enum": ["auto", "on", "off"]
               },
               "languageCode": {
                 "type": "string"
@@ -523,10 +521,21 @@
               "apiKey": {
                 "type": "string"
               },
+              "baseUrl": {
+                "type": "string"
+              },
               "model": {
                 "type": "string"
               },
               "voice": {
+                "type": "string"
+              },
+              "speed": {
+                "type": "number",
+                "minimum": 0.25,
+                "maximum": 4.0
+              },
+              "instructions": {
                 "type": "string"
               }
             }
